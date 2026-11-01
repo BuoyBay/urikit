@@ -1,0 +1,443 @@
+Const URIUnreserved As String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+Const URISubDelims As String = "!$&'()*+,;="
+Const URIHex As String = "0123456789ABCDEFabcdef"
+
+Private Sub CheckURIComponent(sourceText As String, extra As String)
+    Dim chars As Array Of String = String.Chars(sourceText)
+    Dim i As Integer = 0
+    While i < Array.Count(chars)
+        Dim ch As String = chars(i)
+        If ch = "%" Then
+            If i + 2 >= Array.Count(chars) Then Throw New InvalidArgumentException("Incomplete URI percent escape")
+            If Not String.Contains(URIHex, chars(i + 1), True) Or Not String.Contains(URIHex, chars(i + 2), True) Then Throw New InvalidArgumentException("Invalid URI percent escape")
+            i += 3
+        Else
+            If Not String.Contains(URIUnreserved + URISubDelims + extra, ch, True) Then Throw New InvalidArgumentException("Invalid URI component character; encode Unicode explicitly")
+            i += 1
+        End If
+    End While
+End Sub
+
+Private Function URIIsScheme(sourceText As String) As Boolean
+    If String.Len(sourceText) = 0 Then Return False
+    Dim chars As Array Of String = String.Chars(sourceText)
+    If Not String.Contains("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", chars(0), True) Then Return False
+    For Each ch As String In chars
+        If Not String.Contains("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+.-", ch, True) Then Return False
+    Next
+    Return True
+End Function
+
+Private Function URIIPv4(sourceText As String) As Boolean
+    Dim parts As Array Of String = String.Split(sourceText, ".", True)
+    If Array.Count(parts) <> 4 Then Return False
+    For Each part As String In parts
+        If String.Len(part) < 1 Or String.Len(part) > 3 Then Return False
+        If String.Len(part) > 1 And String.Left(part, 1) = "0" Then Return False
+        Dim n As Integer = 0
+        For Each ch As String In String.Chars(part)
+            If Not String.Contains("0123456789", ch, True) Then Return False
+            n = n * 10 + String.Asc(ch) - 48
+        Next
+        If n > 255 Then Return False
+    Next
+    Return True
+End Function
+
+Private Function URIIPLiteral(sourceText As String) As Boolean
+    If String.Len(sourceText) = 0 Then Return False
+    If String.LCase(String.Left(sourceText, 1)) = "v" Then
+        Dim dot As Integer = String.IndexOf(sourceText, ".", True)
+        If dot < 2 Or dot = String.Len(sourceText) - 1 Then Return False
+        For Each ch As String In String.Chars(String.Substring(sourceText, 1, dot - 1))
+            If Not String.Contains(URIHex, ch, True) Then Return False
+        Next
+        For Each ch As String In String.Chars(String.Substring(sourceText, dot + 1))
+            If Not String.Contains(URIUnreserved + URISubDelims + ":", ch, True) Then Return False
+        Next
+        Return True
+    End If
+    If String.Contains(sourceText, ":::", True) Then Return False
+    If String.Contains(sourceText, ".", True) And String.Right(sourceText, 1) = ":" Then Return False
+    Dim compression As Integer = String.IndexOf(sourceText, "::", True)
+    Dim expanded As String = sourceText
+    If compression >= 0 Then
+        If String.IndexOf(sourceText, "::", compression + 2, True) >= 0 Then Return False
+        expanded = String.Substring(sourceText, 0, compression) + ":" + String.Substring(sourceText, compression + 2)
+        If String.Left(expanded, 1) = ":" Then expanded = String.Substring(expanded, 1)
+        If String.Right(expanded, 1) = ":" Then expanded = String.Left(expanded, String.Len(expanded) - 1)
+    Else
+        If String.Left(sourceText, 1) = ":" Or String.Right(sourceText, 1) = ":" Then Return False
+    End If
+    Dim units As Integer = 0
+    If String.Len(expanded) > 0 Then
+        Dim parts As Array Of String = String.Split(expanded, ":", True)
+        For i As Integer = 0 To Array.Count(parts) - 1
+            Dim part As String = parts(i)
+            If String.Contains(part, ".", True) Then
+                If i <> Array.Count(parts) - 1 Or Not URIIPv4(part) Then Return False
+                units += 2
+            Else
+                If String.Len(part) < 1 Or String.Len(part) > 4 Then Return False
+                For Each ch As String In String.Chars(part)
+                    If Not String.Contains(URIHex, ch, True) Then Return False
+                Next
+                units += 1
+            End If
+        Next
+    End If
+    If compression >= 0 Then Return units < 8
+    Return units = 8
+End Function
+
+''' Immutable ASCII URI reference, preserving spelling and empty component markers.
+Public Class URIReference
+    Private Property mText As String
+    Private Property mScheme As String
+    Private Property mAuthority As String
+    Private Property mPath As String
+    Private Property mQuery As String
+    Private Property mFragment As String
+    Private Property mHost As String
+    Private Property mPort As String
+    Private Property mUserInfo As String
+    Private Property mHasScheme As Boolean
+    Private Property mHasAuthority As Boolean
+    Private Property mHasQuery As Boolean
+    Private Property mHasFragment As Boolean
+    Private Property mHasPort As Boolean
+    Private Property mHasUserInfo As Boolean
+
+    Public Sub Constructor(sourceText As String, maxBytes As Integer = 65536)
+        If maxBytes < 1 Or maxBytes > 1048576 Then Throw New InvalidArgumentException("URI byte limit must be in 1..1048576")
+        If String.LenBytes(sourceText) > maxBytes Then Throw New InvalidArgumentException("URI byte limit exceeded")
+        mText = sourceText
+        Dim rest As String = sourceText
+        Dim index As Integer = String.IndexOf(rest, "#", True)
+        If index >= 0 Then
+            mHasFragment = True
+            mFragment = String.Substring(rest, index + 1)
+            rest = String.Left(rest, index)
+            CheckURIComponent(mFragment, ":@/?")
+        End If
+        index = String.IndexOf(rest, "?", True)
+        If index >= 0 Then
+            mHasQuery = True
+            mQuery = String.Substring(rest, index + 1)
+            rest = String.Left(rest, index)
+            CheckURIComponent(mQuery, ":@/?")
+        End If
+        Dim colon As Integer = String.IndexOf(rest, ":", True)
+        Dim slash As Integer = String.IndexOf(rest, "/", True)
+        If colon >= 0 And (slash < 0 Or colon < slash) Then
+            mScheme = String.Left(rest, colon)
+            If Not URIIsScheme(mScheme) Then Throw New InvalidArgumentException("Invalid URI scheme or colon in relative first segment")
+            mHasScheme = True
+            rest = String.Substring(rest, colon + 1)
+        End If
+        If String.StartsWith(rest, "//", True) Then
+            mHasAuthority = True
+            rest = String.Substring(rest, 2)
+            slash = String.IndexOf(rest, "/", True)
+            If slash < 0 Then
+                mAuthority = rest
+                rest = ""
+            Else
+                mAuthority = String.Left(rest, slash)
+                rest = String.Substring(rest, slash)
+            End If
+            Dim hostPort As String = mAuthority
+            index = String.IndexOf(hostPort, "@", True)
+            If index >= 0 Then
+                mHasUserInfo = True
+                mUserInfo = String.Left(hostPort, index)
+                CheckURIComponent(mUserInfo, ":")
+                hostPort = String.Substring(hostPort, index + 1)
+            End If
+            If String.StartsWith(hostPort, "[", True) Then
+                index = String.IndexOf(hostPort, "]", True)
+                If index < 0 Then Throw New InvalidArgumentException("Unclosed URI IP literal")
+                mHost = String.Left(hostPort, index + 1)
+                If Not URIIPLiteral(String.Substring(hostPort, 1, index - 1)) Then Throw New InvalidArgumentException("Invalid URI IP literal")
+                hostPort = String.Substring(hostPort, index + 1)
+                If String.Len(hostPort) > 0 Then
+                    If Not String.StartsWith(hostPort, ":", True) Then Throw New InvalidArgumentException("Invalid data after URI IP literal")
+                    mHasPort = True
+                    mPort = String.Substring(hostPort, 1)
+                End If
+            Else
+                index = String.IndexOf(hostPort, ":", True)
+                If index >= 0 Then
+                    mHasPort = True
+                    mPort = String.Substring(hostPort, index + 1)
+                    mHost = String.Left(hostPort, index)
+                Else
+                    mHost = hostPort
+                End If
+                CheckURIComponent(mHost, "")
+            End If
+            For Each ch As String In String.Chars(mPort)
+                If Not String.Contains("0123456789", ch, True) Then Throw New InvalidArgumentException("URI port must contain decimal digits")
+            Next
+        End If
+        mPath = rest
+        CheckURIComponent(mPath, ":@/")
+    End Sub
+
+    Public Property Text As String
+        Get
+            Return mText
+        End Get
+    End Property
+
+    Public Property Scheme As String
+        Get
+            Return mScheme
+        End Get
+    End Property
+
+    Public Property Authority As String
+        Get
+            Return mAuthority
+        End Get
+    End Property
+
+    Public Property Path As String
+        Get
+            Return mPath
+        End Get
+    End Property
+
+    Public Property Query As String
+        Get
+            Return mQuery
+        End Get
+    End Property
+
+    Public Property Fragment As String
+        Get
+            Return mFragment
+        End Get
+    End Property
+
+    Public Property Host As String
+        Get
+            Return mHost
+        End Get
+    End Property
+
+    Public Property Port As String
+        Get
+            Return mPort
+        End Get
+    End Property
+
+    Public Property UserInfo As String
+        Get
+            Return mUserInfo
+        End Get
+    End Property
+
+    Public Property HasScheme As Boolean
+        Get
+            Return mHasScheme
+        End Get
+    End Property
+
+    Public Property HasAuthority As Boolean
+        Get
+            Return mHasAuthority
+        End Get
+    End Property
+
+    Public Property HasQuery As Boolean
+        Get
+            Return mHasQuery
+        End Get
+    End Property
+
+    Public Property HasFragment As Boolean
+        Get
+            Return mHasFragment
+        End Get
+    End Property
+
+    Public Property HasPort As Boolean
+        Get
+            Return mHasPort
+        End Get
+    End Property
+
+    Public Property HasUserInfo As Boolean
+        Get
+            Return mHasUserInfo
+        End Get
+    End Property
+End Class
+
+Public Function ParseURI(sourceText As String, maxBytes As Integer = 65536) As URIReference
+    Return New URIReference(sourceText, maxBytes)
+End Function
+
+Private Function URIWithoutLastSegment(uriPath As String) As String
+    For i As Integer = String.Len(uriPath) - 1 To 0 Step -1
+        If String.Substring(uriPath, i, 1) = "/" Then Return String.Left(uriPath, i)
+    Next
+    Return ""
+End Function
+
+''' RFC3986 section 5.2.4, operating on encoded uriPath segments only.
+Public Function RemoveURIDotSegments(uriPath As String) As String
+    If String.LenBytes(uriPath) > 65536 Then Throw New InvalidArgumentException("URI uriPath limit exceeded")
+    CheckURIComponent(uriPath, ":@/")
+    Dim input As String = uriPath
+    Dim output As String
+    While String.Len(input) > 0
+        If String.StartsWith(input, "../", True) Then
+            input = String.Substring(input, 3)
+        ElseIf String.StartsWith(input, "./", True) Then
+            input = String.Substring(input, 2)
+        ElseIf String.StartsWith(input, "/./", True) Then
+            input = String.Substring(input, 2)
+        ElseIf input = "/." Then
+            input = "/"
+        ElseIf String.StartsWith(input, "/../", True) Then
+            input = String.Substring(input, 3)
+            output = URIWithoutLastSegment(output)
+        ElseIf input = "/.." Then
+            input = "/"
+            output = URIWithoutLastSegment(output)
+        ElseIf input = "." Or input = ".." Then
+            input = ""
+        Else
+            Dim first As Integer = 0
+            If String.StartsWith(input, "/", True) Then first = 1
+            Dim slash As Integer = String.IndexOf(input, "/", first, True)
+            If slash < 0 Then
+                output += input
+                input = ""
+            Else
+                output += String.Left(input, slash)
+                input = String.Substring(input, slash)
+            End If
+        End If
+    End While
+    Return output
+End Function
+
+''' Strict RFC3986 resolution. Base must be absolute; spelling is not normalized.
+Public Function ResolveURI(baseText As String, reference As String) As URIReference
+    Dim base As URIReference = ParseURI(baseText)
+    Dim item As URIReference = ParseURI(reference)
+    If Not base.HasScheme Then Throw New InvalidArgumentException("URI resolution requires an absolute base")
+    Dim scheme As String = base.Scheme
+    Dim authority As String
+    Dim hasAuthority As Boolean
+    Dim uriPath As String
+    Dim query As String
+    Dim hasQuery As Boolean
+    If item.HasScheme Then
+        scheme = item.Scheme
+        authority = item.Authority
+        hasAuthority = item.HasAuthority
+        uriPath = RemoveURIDotSegments(item.Path)
+        query = item.Query
+        hasQuery = item.HasQuery
+    Else
+        If item.HasAuthority Then
+            authority = item.Authority
+            hasAuthority = True
+            uriPath = RemoveURIDotSegments(item.Path)
+            query = item.Query
+            hasQuery = item.HasQuery
+        Else
+            authority = base.Authority
+            hasAuthority = base.HasAuthority
+            If String.Len(item.Path) = 0 Then
+                uriPath = base.Path
+                If item.HasQuery Then
+                    query = item.Query
+                    hasQuery = True
+                Else
+                    query = base.Query
+                    hasQuery = base.HasQuery
+                End If
+            Else
+                If String.StartsWith(item.Path, "/", True) Then
+                    uriPath = RemoveURIDotSegments(item.Path)
+                Else
+                    If base.HasAuthority And String.Len(base.Path) = 0 Then
+                        uriPath = RemoveURIDotSegments("/" + item.Path)
+                    Else
+                        Dim prefix As String = URIWithoutLastSegment(base.Path)
+                        If String.Contains(base.Path, "/", True) Then prefix += "/"
+                        uriPath = RemoveURIDotSegments(prefix + item.Path)
+                    End If
+                End If
+                query = item.Query
+                hasQuery = item.HasQuery
+            End If
+        End If
+    End If
+    Dim sourceText As String = scheme + ":"
+    If hasAuthority Then sourceText += "//" + authority
+    sourceText += uriPath
+    If hasQuery Then sourceText += "?" + query
+    If item.HasFragment Then sourceText += "#" + item.Fragment
+    Return ParseURI(sourceText)
+End Function
+
+''' Encode one opaque component: preserve unreserved ASCII, encode all other octets.
+Public Function PercentEncodeBytes(data As Bytes) As String
+    If data Is Nil Then Throw New InvalidArgumentException("URI bytes are required")
+    If data.Count > 65536 Then Throw New InvalidArgumentException("URI encoding input limit exceeded")
+    Dim pieces() As String
+    Dim hex As String = "0123456789ABCDEF"
+    For i As Integer = 0 To data.Count - 1
+        Dim octet As Integer = data.Item(i)
+        Dim ch As String = String.Chr(octet)
+        If octet > 0 And octet < 128 And String.Contains(URIUnreserved, ch, True) Then
+            Array.Append(pieces, ch)
+        Else
+            Array.Append(pieces, "%" + String.Substring(hex, octet \ 16, 1) + String.Substring(hex, octet Mod 16, 1))
+        End If
+    Next
+    Return String.Join(pieces, "")
+End Function
+
+Public Function PercentEncodeUTF8(sourceText As String) As String
+    Return PercentEncodeBytes(Bytes.FromString(sourceText, Text.Encodings.UTF8))
+End Function
+
+''' Decode escapes exactly once; raw input must be printable ASCII. Plus stays plus.
+Public Function PercentDecodeBytes(sourceText As String) As Bytes
+    If String.LenBytes(sourceText) > 196608 Then Throw New InvalidArgumentException("URI decoding input limit exceeded")
+    Dim chars As Array Of String = String.Chars(sourceText)
+    Dim output As New Bytes()
+    Dim i As Integer = 0
+    While i < Array.Count(chars)
+        Dim ch As String = chars(i)
+        If ch = "%" Then
+            If i + 2 >= Array.Count(chars) Then Throw New InvalidArgumentException("Incomplete URI percent escape")
+            Dim parsed As Result Of Bytes, String = Bytes.FromHex(chars(i + 1) + chars(i + 2))
+            If parsed.IsErr Then Throw New InvalidArgumentException("Invalid URI percent escape")
+            output.Append(parsed.Value.Item(0))
+            i += 3
+        Else
+            Dim octet As Integer = String.Asc(ch)
+            If octet < 33 Or octet > 126 Then Throw New InvalidArgumentException("Percent decoding requires ASCII input; encode whitespace")
+            output.Append(octet)
+            i += 1
+        End If
+        If output.Count > 65536 Then Throw New InvalidArgumentException("URI decoding output limit exceeded")
+    End While
+    Return output
+End Function
+
+Public Function PercentDecodeUTF8(sourceText As String) As String
+    Dim data As Bytes = PercentDecodeBytes(sourceText)
+    For i As Integer = 0 To data.Count - 1
+        If data.Item(i) = 0 Then Throw New InvalidArgumentException("NUL is unsupported by the URI sourceText contract; use bytes")
+    Next
+    Return data.ToString(Text.Encodings.UTF8)
+End Function
