@@ -1,6 +1,6 @@
 # Parse URI references and apply RFC3986 resolution
 
-Pure Buoy ASCII URI-reference parsing, strict RFC3986 relative resolution and
+Source-only ASCII URI-reference parsing, strict RFC3986 relative resolution and
 explicit byte/UTF-8 percent codecs. `Import urikit`. No native or network dependencies.
 This fills component/resolution semantics above the existing URLConnection HTTP
 transport; it does not make requests or implement browser URL behavior.
@@ -52,8 +52,6 @@ On your own machine, install Buoy and run:
 ```sh
 buoy ai init --both
 ```
-
-The generated agent files and editor settings stay local and are ignored by Git.
 
 ## Contributing
 

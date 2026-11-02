@@ -53,9 +53,3 @@ Dot-segment removal follows the specification's string-buffer procedure and may
 be quadratic for long paths; limits bound it, but this is not a streaming parser.
 Do not use this package alone for request allowlists, filesystem path containment
 or service-specific URL validation.
-
-## Verification
-
-
-Maintainers run the private validation suite before release. See the repository README for public build instructions.
-
