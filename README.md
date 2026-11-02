@@ -1,4 +1,4 @@
-# Parse URI references and apply RFC3986 resolution
+# URI-reference parse and RFC3986 resolution
 
 Source-only ASCII URI-reference parsing, strict RFC3986 relative resolution and
 explicit byte/UTF-8 percent codecs. `Import urikit`. No native or network dependencies.
